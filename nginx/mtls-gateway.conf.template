@@ -1,0 +1,63 @@
+# mTLS termination for the Open Banking Nigeria API gateway.
+#
+# Models the real-world split used by Open Banking specs (UK OBIE, CBN
+# Nigeria Operational Guidelines): a plain OAuth2-only host on the bank
+# backend for the browser-facing authorization/consent journey, and this
+# separate "matls." host that TPP *backends* call for AISP/PISP resource
+# and payment calls, requiring a certificate-bound access token (mTLS +
+# OAuth2 together).
+#
+# This container is TLS termination only. It does NOT decide who's allowed
+# to call what - that's gateway-app's job (product entitlement, JWT
+# verification, rate limiting). nginx only:
+#   1. Requires and verifies the caller's client certificate against ca.crt.
+#   2. Forwards the verification result and certificate identity to
+#      gateway-app via headers.
+#   3. Forwards a shared secret proving the request came through here
+#      (gateway-app fails closed without it) - gateway-app is not meant to
+#      be reachable except through this proxy.
+#
+# This file is a template: docker's nginx image envsubst's ${Var}
+# references that match actual environment variable names on container
+# start, writing the result to /etc/nginx/conf.d/. nginx's own
+# request-time variables (e.g. $host, $ssl_client_verify) are untouched
+# because they aren't environment variables of the container process.
+
+server {
+    listen 8443 ssl;
+    server_name matls.openbanking.local;
+
+    ssl_certificate     /etc/nginx/certs/server.crt;
+    ssl_certificate_key /etc/nginx/certs/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Require and verify a client certificate signed by our dev CA.
+    ssl_client_certificate /etc/nginx/certs/ca.crt;
+    ssl_verify_client      on;
+    ssl_verify_depth       2;
+
+    location / {
+        proxy_pass http://gateway_app_upstream;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # Client certificate identity, forwarded for gateway-app's identity
+        # middleware.
+        proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+        proxy_set_header X-SSL-Client-S-DN   $ssl_client_s_dn;
+        proxy_set_header X-SSL-Client-Serial $ssl_client_serial;
+        proxy_set_header X-SSL-Client-Cert   $ssl_client_escaped_cert;
+
+        # Proves this request actually came through this proxy rather than
+        # being sent straight to gateway-app's internal port.
+        proxy_set_header X-Gateway-Secret    "${MTLS_GATEWAY_SECRET}";
+    }
+}
+
+upstream gateway_app_upstream {
+    # gateway-app runs on the host (npm run start:dev), same dev pattern as
+    # tutorial-open-api - not containerized here to keep the dev loop fast.
+    server host.docker.internal:4000;
+}

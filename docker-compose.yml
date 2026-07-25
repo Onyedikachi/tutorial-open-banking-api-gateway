@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+
+  # TLS/mTLS termination in front of gateway-app - run
+  # certs/generate-dev-certs.sh once before starting this service, and set
+  # MTLS_GATEWAY_SECRET (e.g. `openssl rand -hex 32`) in a .env file here
+  # AND in the shell that runs gateway-app (`npm run start:dev`) - see
+  # README.md. gateway-app itself runs on the host, not in this compose
+  # file, same dev pattern as tutorial-open-api.
+  #
+  # Reaching gateway-app on the host from inside this container relies on
+  # host.docker.internal, Docker's documented mechanism for exactly this.
+  # It resolves correctly on standard Docker Desktop (Mac/Windows) and
+  # native Linux with a recent Docker Engine. Some nested/sandboxed WSL2
+  # setups have been seen where the Docker Desktop backend's VM can't
+  # route back to the WSL2 distro at all (neither host.docker.internal nor
+  # network_mode: host works there) - if `curl --cacert certs/ca.crt
+  # --cert ... https://localhost:8443/...` hangs or 502s despite gateway-app
+  # running, that's this; there's no compose-level fix for it, only running
+  # gateway-app directly on whatever host Docker itself can reach.
+  mtls-gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8443:8443"
+    environment:
+      MTLS_GATEWAY_SECRET: ${MTLS_GATEWAY_SECRET:?Set MTLS_GATEWAY_SECRET in a .env file next to docker-compose.yml - see README.md}
+    volumes:
+      - ./nginx/mtls-gateway.conf.template:/etc/nginx/templates/mtls-gateway.conf.template:ro
+      - ./certs:/etc/nginx/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
